@@ -31,6 +31,8 @@ NEXT_STATUS_SUCCESS = "acertou"                         # predicted value settle
 NEXT_STATUS_ERROR = "errou"                             # predicted value error status
 FREQUENCY_COL = "valor_freq"                            # column of frequency value
 
+FEATURES_COLS = ['data', 'sumplementar1', 'sumplementar2', 'sumplementar3', 'sumplementar4', 'sumplementar5', 'sumplementar6', 'sumplementar7', 'sumplementar8', 'sumplementar9', 'sumplementar10', 'sumplementar11', 'sumplementar12', 'sumplementar13', 'sumplementar14']
+
 # Supplemental: The code automatically considers Supplemental 1..Supplemental 14 when they exist for the model training and prediction values
 SUPPLEMENTARY_RANGE = (1, 14)                           # interval referring to supplementary1..supplementary14
 SUPPLEMENTARY_COL = "sumplementar"                      # interval referring to supplementary1..supplementary14
