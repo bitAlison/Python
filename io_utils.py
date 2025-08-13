@@ -9,11 +9,13 @@ Includes:
 """
 
 import os
-import shutil
-import pandas as pd
-from datetime import datetime
 from pathlib import Path
-import config as cfg
+import pandas as pd
+from config import *
+import shutil
+import datetime
+import logging
+
 
 # ==============================
 # Ensure dirs func
@@ -21,101 +23,84 @@ import config as cfg
 def ensure_dirs():
     """Creates directories needed for the project."""
     try:
-        for d in [cfg.PROJECT_DIR, cfg.EXPORT_DIR, cfg.LOG_DIR, cfg.BACKUP_DIR]:
-            if not os.path.exists(d):
-                Path(d).mkdir(parents=True, exist_ok=True)
+        Path(EXPORT_DIR).mkdir(parents=True, exist_ok=True)
+        Path(BACKUP_DIR).mkdir(parents=True, exist_ok=True)
     except Exception as e:
         log(f"An error occurred while trying to create the directories. {e}", "ERROR")
 
 # ==============================
 # Log Function
 # ==============================
-def log(msg, tipo="INFO"):
-    if tipo in ("ERROR", "WARNING"):
-        print(f"[{tipo}] {msg}")
+def log(msg: str, level: str = "INFO"):
+    getattr(logging, level.lower())(msg)
+
+def _create_template_if_missing():
+    if not Path(DATA_SOURCE).exists():
+        log(f"[I/O] Arquivo {DATA_SOURCE} não encontrado — criando template.", "WARNING")
+        Path(DATA_SOURCE).parent.mkdir(parents=True, exist_ok=True)
+        cols = [DATE_COL, TARGET_COL] + [f"{SUPPLEMENTARY_COL}{i}" for i in range(SUPPLEMENTARY_RANGE[0], SUPPLEMENTARY_RANGE[1] + 1)]
+        pd.DataFrame(columns=cols).to_csv(DATA_SOURCE, sep=CSV_SEP, index=False, encoding=FILE_ENCODING)
 
 # ==============================
 # Backup predictions
 # ==============================
-def backup_predictions():
-    """Creates a backup of the forecast file before overwriting."""
-    if not cfg.AUTO_BACKUP:
-        return None
-
-    try:
-        predicionts_path = Path(cfg.FORECAST_FILE)
-        if predicionts_path.exists():
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_name = f"{cfg.OUTPUT_NAME}_{ts}{cfg.OUTPUT_EXTENSION}"
-            backup_path = Path(cfg.BACKUP_DIR) / backup_name
-            shutil.copy2(predicionts_path, backup_path)
-
-            # Remove old backups if limit exceeded
-            backups = sorted(Path(cfg.BACKUP_DIR).glob(f"{cfg.OUTPUT_NAME}_*{cfg.OUTPUT_EXTENSION}"), key=os.path.getmtime)
-            if len(backups) > cfg.PREV_BACKUP_KEEP:
-                for old in backups[:-cfg.PREV_BACKUP_KEEP]:
-                    try:
-                        old.unlink()
-                    except OSError:
-                        pass
-            return backup_path
-        return None
-    except Exception as e:
-        log(f"An error occurred while trying to perform automatic backup. {e}", "ERROR")
-        return None
+def backup_predictions(path: str = None):
+    path = path or FORECAST_FILE
+    if Path(path).exists():
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        dest = Path(BACKUP_DIR) / f"previsoes_{ts}.bak.csv"
+        shutil.copy2(path, dest)
+        log(f"[I/O] Backup criado: {dest}", "INFO")
 
 # ==============================
 # Load data from historical source csv file
 # ==============================
-def load_data_source():
+def load_data_source() -> pd.DataFrame:
     """Reads the DataSource.csv file and returns a clean DataFrame."""
     try:
-        path = Path(cfg.DATA_SOURCE)
-        if not path.exists():
-            raise FileNotFoundError(f"Template file not found: {path}")
-
-        # Date conversion
-        df = pd.read_csv(path, parse_dates=[cfg.DATE_COL], encoding=cfg.FILE_ENCODING, sep=cfg.CSV_SEPARATOR, dayfirst=True)
-        #df[cfg.DATE_COL] = pd.to_datetime(df[cfg.DATE_COL], errors="coerce", dayfirst=True)
-        df = df.dropna(subset=[cfg.DATE_COL, cfg.TARGET_COL])
-
-        return df.sort_values(cfg.DATE_COL).reset_index(drop=True)
+        _create_template_if_missing()
+        df = pd.read_csv(DATA_SOURCE, sep=CSV_SEPARATOR, encoding=FILE_ENCODING)
+        if DATE_COL not in df.columns or TARGET_COL not in df.columns:
+            raise ValueError(f"Arquivo {DATA_SOURCE} deve conter as colunas '{DATE_COL}' e '{TARGET_COL}'.")
+        return df
     except Exception as e:
-        log(f"An error occurred while trying to read the data source. {e}", "ERROR")
-        return None
+        log(f"[I/O] Erro ao ler DataSource: {e}", "ERROR")
+        raise
 
 # ==============================
 # Load prediction data from csv file
 # ==============================
-def load_predictions_csv(path: str = None) -> pd.DataFrame:
-    path = path or cfg.FORECAST_FILE
-    if not os.path.exists(path):
-        # retorna DF vazio com colunas no padrão
-        cols = [cfg.DATE_COL, cfg.NEXT_TARGET_COL_VALUE, cfg.LATEST_TARGET_COL_VALUE, cfg.NEXT_TARGET_COL_PERCENTUAL, cfg.NEXT_TARGET_COL_RESULT]
-        return pd.DataFrame(columns=cols)
-    df = pd.read_csv(path, sep=';', encoding=cfg.FILE_ENCODING, dtype=str)
-    # normaliza colunas e tipos
-    for c in [cfg.NEXT_TARGET_COL_VALUE, cfg.LATEST_TARGET_COL_VALUE]:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors='coerce')
-    if cfg.NEXT_TARGET_COL_PERCENTUAL in df.columns:
-        df[cfg.NEXT_TARGET_COL_PERCENTUAL] = pd.to_numeric(df[cfg.NEXT_TARGET_COL_PERCENTUAL], errors='coerce')
-    return df
+def load_predictions_csv() -> pd.DataFrame:
+    if not Path(FORECAST_FILE).exists():
+        Path(FORECAST_FILE).parent.mkdir(parents=True, exist_ok=True)
+        df = pd.DataFrame(columns=[DATE_COL, NEXT_TARGET_COL_VALUE, LATEST_TARGET_COL_VALUE, NEXT_TARGET_COL_PERCENTUAL, NEXT_TARGET_COL_RESULT])
+        df.to_csv(FORECAST_FILE, sep=CSV_SEPARATOR, index=False, encoding=FILE_ENCODING)
+        return df
+    try:
+        df = pd.read_csv(FORECAST_FILE, sep=CSV_SEPARATOR, encoding=FILE_ENCODING, dtype=str)
+        return df
+    except Exception as e:
+        log(f"[I/O] Erro ao ler previsões: {e}", "ERROR")
+        raise
 
 # ==============================
 # Save predictions in the correct format
 # ==============================
 def save_predictions(df: pd.DataFrame, path: str = None):
-    path = path or cfg.FORECAST_FILE
-    # garante ordem e tipos
-    out = pd.DataFrame({
-        cfg.DATE_COL: df.get(cfg.DATE_COL, pd.Series(dtype=str)),
-        cfg.NEXT_TARGET_COL_VALUE: df.get(cfg.NEXT_TARGET_COL_VALUE, pd.Series(dtype=float)).round().astype('Int64'),
-        cfg.LATEST_TARGET_COL_VALUE: df.get(cfg.LATEST_TARGET_COL_VALUE, pd.Series(dtype=float)).round().astype('Int64'),
-        cfg.NEXT_TARGET_COL_PERCENTUAL: df.get(cfg.NEXT_TARGET_COL_PERCENTUAL, pd.Series(dtype=float)).round(2),
-        cfg.NEXT_TARGET_COL_RESULT: df.get(cfg.NEXT_TARGET_COL_RESULT, pd.Series(dtype=str)).fillna('')
-    })
-    out.to_csv(path, sep=';', index=False, encoding=cfg.FILE_ENCODING)
+    path = path or FORECAST_FILE
+    # Garantir ordem e tipos
+    out = pd.DataFrame(columns=[DATE_COL, NEXT_TARGET_COL_VALUE, LATEST_TARGET_COL_VALUE, NEXT_TARGET_COL_PERCENTUAL, NEXT_TARGET_COL_RESULT])
+    if not df.empty:
+        # coage e arredonda
+        tmp = df.copy()
+        if NEXT_TARGET_COL_VALUE in tmp.columns:
+            tmp[NEXT_TARGET_COL_VALUE] = pd.to_numeric(tmp[NEXT_TARGET_COL_VALUE], errors='coerce').round().astype('Int64')
+        if LATEST_TARGET_COL_VALUE in tmp.columns:
+            tmp[LATEST_TARGET_COL_VALUE] = pd.to_numeric(tmp[LATEST_TARGET_COL_VALUE], errors='coerce')
+        if NEXT_TARGET_COL_PERCENTUAL in tmp.columns:
+            tmp[NEXT_TARGET_COL_PERCENTUAL] = pd.to_numeric(tmp[NEXT_TARGET_COL_PERCENTUAL], errors='coerce').round(2)
+        out = tmp[[DATE_COL, NEXT_TARGET_COL_VALUE, LATEST_TARGET_COL_VALUE, NEXT_TARGET_COL_PERCENTUAL, NEXT_TARGET_COL_RESULT]]
+    out.to_csv(path, sep=CSV_SEPARATOR, index=False, encoding=FILE_ENCODING)
 
 # ==============================
 # Apeend a new prediction record in the csv file
@@ -124,11 +109,11 @@ def append_prediction_line(date_str: str, pred_int: int, percent: float, path: s
     """Opcional: helper para acrescentar uma linha de previsão."""
     df_prev = load_predictions_csv(path)
     new_line = {
-        cfg.DATE_COL: date_str,
-        cfg.NEXT_TARGET_COL_VALUE: int(pred_int),
-        cfg.LATEST_TARGET_COL_VALUE: '',
-        cfg.NEXT_TARGET_COL_PERCENTUAL: float(round(percent, 2)),
-        cfg.NEXT_TARGET_COL_RESULT: ''
+        DATE_COL: date_str,
+        NEXT_TARGET_COL_VALUE: int(pred_int),
+        LATEST_TARGET_COL_VALUE: '',
+        NEXT_TARGET_COL_PERCENTUAL: float(round(percent, 2)),
+        NEXT_TARGET_COL_RESULT: ''
     }
     df_prev = pd.concat([df_prev, pd.DataFrame([new_line])], ignore_index=True)
     save_predictions(df_prev, path)
@@ -145,27 +130,27 @@ def update_prediction_result(data_prev, real_value):
         df_prev = load_predictions_csv()
         data_prev = pd.to_datetime(data_prev)
 
-        if data_prev not in df_prev[cfg.DATE_COL].values:
+        if data_prev not in df_prev[DATE_COL].values:
             return False
 
         # Update prediction value
-        idx = df_prev[df_prev[cfg.DATE_COL] == data_prev].index[0]
-        df_prev.at[idx, cfg.LATEST_TARGET_COL_VALUE] = round(real_value, 2)
+        idx = df_prev[df_prev[DATE_COL] == data_prev].index[0]
+        df_prev.at[idx, LATEST_TARGET_COL_VALUE] = round(real_value, 2)
 
         # Compare with expected_value (also rounded)
-        vp = round(df_prev.at[idx, cfg.NEXT_TARGET_COL_VALUE], 2)
+        vp = round(df_prev.at[idx, NEXT_TARGET_COL_VALUE], 2)
         vr = round(real_value, 2)
-        df_prev.at[idx, cfg.NEXT_TARGET_COL_RESULT] = cfg.NEXT_STATUS_SUCCESS if vp == vr else cfg.NEXT_STATUS_ERROR
+        df_prev.at[idx, NEXT_TARGET_COL_RESULT] = NEXT_STATUS_SUCCESS if vp == vr else NEXT_STATUS_ERROR
 
         # Calculate predicted percentage (inverse relative error)
         if vr != 0:
             erro_rel = abs(vp - vr) / abs(vr)
-            df_prev.at[idx, cfg.NEXT_TARGET_COL_PERCENTUAL] = round((1 - erro_rel) * 100, 2)
+            df_prev.at[idx, NEXT_TARGET_COL_PERCENTUAL] = round((1 - erro_rel) * 100, 2)
         else:
-            df_prev.at[idx, cfg.NEXT_TARGET_COL_PERCENTUAL] = None
+            df_prev.at[idx, NEXT_TARGET_COL_PERCENTUAL] = None
 
         backup_predictions()
-        df_prev.to_csv(cfg.FORECAST_FILE, sep=";", index=False, decimal=",")
+        df_prev.to_csv(FORECAST_FILE, sep=";", index=False, decimal=",")
         return True
     except Exception as e:
         log(f"An error occurred while trying to append a new record to the predicions file. {e}", "ERROR")
