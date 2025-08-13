@@ -1,8 +1,7 @@
-# models.py
 """
 Model wrapper: AutoModels
 - LightGBM (Optuna) + RNN (GRU)
-- salve/load artifacts (EXPORT_DIR)
+- save/load artifacts (EXPORT_DIR)
 - ensemble e forecast
 """
 
@@ -60,6 +59,15 @@ class AutoModels:
         self._p_scaler_y = self.export_dir / SCALER_Y_FILENAME
         self._p_meta = self.export_dir / METADATA_JSON
 
+    # ---------- helpers ----------
+    def _align_feature_frame(self, df: pd.DataFrame, feat_cols: list) -> pd.DataFrame:
+        """Garante que df possua TODAS as colunas em feat_cols (cria faltantes=0) e devolve reordenado."""
+        df2 = df.copy()
+        for c in feat_cols:
+            if c not in df2.columns:
+                df2[c] = 0
+        return df2[feat_cols]
+
     # ==============================
     # Save artifacts
     # ==============================
@@ -68,7 +76,12 @@ class AutoModels:
             if self.lgb_model is not None:
                 self.lgb_model.save_model(str(self._p_lgb))
             if self.rnn_model is not None:
-                self.rnn_model.save(str(self._p_rnn), include_optimizer=False)
+                # evita salvar otimizador para reduzir incompatibilidades
+                try:
+                    self.rnn_model.save(str(self._p_rnn), save_format='keras')
+                except TypeError:
+                    # fallback para versões antigas
+                    self.rnn_model.save(str(self._p_rnn))
             if self.scaler_X is not None:
                 joblib.dump(self.scaler_X, str(self._p_scaler_x))
             if self.scaler_y is not None:
@@ -127,8 +140,9 @@ class AutoModels:
             }
             dtr = lgb.Dataset(X_tr, label=y_tr)
             dval = lgb.Dataset(X_val, label=y_val, reference=dtr)
-            callbacks = [lgb.early_stopping(30), lgb.log_evaluation(period=0)]
-            booster = lgb.train(params, dtr, valid_sets=[dval], callbacks=callbacks, verbose_eval=False)
+            # sem early_stopping porque sua versão do lgb não aceita por callback? ok:
+            callbacks = [lgb.log_evaluation(period=0)]
+            booster = lgb.train(params, dtr, valid_sets=[dval], callbacks=callbacks)
             preds = booster.predict(X_val, num_iteration=booster.best_iteration)
             rmse = mean_squared_error(y_val, preds)
             return rmse
@@ -139,14 +153,24 @@ class AutoModels:
     # ==============================
     # Fit or Load model
     # ==============================
-    def fit_or_load(self, X_flat, X_seq, y, dates_list=None, df_prev=None):
+    def fit_or_load(self, X_flat, X_seq, y, feature_cols, dates_list=None, df_prev=None):
         """
-        Se existirem artefatos, carrega; senão treina ambos os modelos.
+        Se existirem artefatos completos, carrega; senão treina ambos os modelos.
+        Agora salvamos e reutilizamos a lista exata de feature_cols.
         """
         self.load_artifacts()
-        if self.lgb_model is not None and self.rnn_model is not None and self.scaler_X is not None and self.scaler_y is not None:
+        if (
+            self.lgb_model is not None and
+            self.rnn_model is not None and
+            self.scaler_X   is not None and
+            self.scaler_y   is not None and
+            self.feature_cols is not None
+        ):
             log("Existing artifacts detected — skipping training.", "INFO")
             return
+
+        # fixar o schema de features desta sessão/treino
+        self.feature_cols = list(feature_cols)
 
         n = X_flat.shape[0]
         split = int(n * 0.85)
@@ -154,9 +178,9 @@ class AutoModels:
         y_tr, y_val = y[:split], y[split:]
         seq_tr, seq_val = X_seq[:split], X_seq[split:]
 
-        # sample weights based on errors in df_prev
+        # sample weights baseados em df_prev
         weights = np.ones(n, dtype=float)
-        if df_prev is not None and not df_prev.empty:
+        if df_prev is not None and not df_prev.empty and dates_list is not None:
             date_to_idx = {pd.Timestamp(d).normalize(): i for i,d in enumerate(dates_list)}
             for _, r in df_prev.iterrows():
                 if str(r.get(NEXT_TARGET_COL_RESULT)).strip().lower() == NEXT_STATUS_ERROR:
@@ -166,7 +190,7 @@ class AutoModels:
                             weights[date_to_idx[d]] *= 3.0
                     except Exception:
                         continue
-            weights = weights / weights.mean()
+            weights = weights / max(weights.mean(), 1e-9)
 
         # Optuna tuning
         try:
@@ -187,23 +211,30 @@ class AutoModels:
             log(f"Optuna done: {best}", "INFO")
         except Exception as e:
             log(f"Optuna fail ({e}) — using default parameters.", "WARNING")
-            lgb_params = PARAMS_LGBM_DEFAULT.copy()
+            # se não tiver no seu config, troque por um dicionário mínimo:
+            lgb_params = {
+                'objective':'regression','metric':'rmse','boosting_type':'gbdt','verbosity':-1,
+                'num_threads': NUM_THREADS or 4,
+                'num_leaves': 64, 'learning_rate': 0.05,
+                'feature_fraction': 0.9, 'bagging_fraction': 0.8,
+                'bagging_freq': 1, 'min_data_in_leaf': 20
+            }
 
-        # train LGB on full with weights
+        # train LGB
         try:
             dtrain = lgb.Dataset(X_flat, label=y, weight=weights)
-            callbacks = [lgb.early_stopping(50), lgb.log_evaluation(period=0)]
-            self.lgb_model = lgb.train(lgb_params, dtrain, num_boost_round=LGB_NUM_ROUNDS, callbacks=callbacks, verbose_eval=False)
+            callbacks = [lgb.log_evaluation(period=0)]
+            self.lgb_model = lgb.train(lgb_params, dtrain, num_boost_round=LGB_NUM_ROUNDS, callbacks=callbacks)
             log("LightGBM trained.", "INFO")
         except Exception as e:
             log(f"Training failure LGB: {e}", "ERROR")
             raise
 
-        # build scalers
+        # scalers
         self.scaler_X = StandardScaler().fit(X_flat)
         self.scaler_y = StandardScaler().fit(y.reshape(-1,1))
 
-        # scale seq for RNN
+        # scale seq para RNN
         samples = X_seq.shape[0]
         seq_2d = X_seq.reshape(samples * self.seq_len, X_seq.shape[2])
         seq_2d_scaled = self.scaler_X.transform(seq_2d)
@@ -217,7 +248,8 @@ class AutoModels:
             log("Training RNN (GRU)...", "INFO")
             self.rnn_model = _build_rnn(self.seq_len, X_seq.shape[2], units=RNN_UNITS)
             es = EarlyStopping(monitor='val_loss', patience=8, restore_best_weights=True)
-            self.rnn_model.fit(Xr_tr, yr_tr, validation_data=(Xr_val, yr_val), epochs=RNN_EPOCHS, batch_size=RNN_BATCH, callbacks=[es], verbose=0)
+            self.rnn_model.fit(Xr_tr, yr_tr, validation_data=(Xr_val, yr_val),
+                               epochs=RNN_EPOCHS, batch_size=RNN_BATCH, callbacks=[es], verbose=0)
             log("RNN trained.", "INFO")
         except Exception as e:
             log(f"Training failure RNN: {e}", "WARNING")
@@ -257,7 +289,7 @@ class AutoModels:
                 except Exception:
                     y_val_orig, lgb_orig, rnn_orig = y_val, lgb_preds, rnn_preds
             else:
-                y_val_orig, lgb_orig, rnn_orig = y_val, lgb_preds, rnn_preds
+                y_val_orig, lgb_orig, rnn_orig = y, lgb_preds, rnn_preds
 
             def acc_exact(y_true, preds):
                 y_i = np.round(y_true).astype(int)
@@ -278,21 +310,30 @@ class AutoModels:
     # ==============================
     # Predict the next value
     # ==============================
-    def predict_next(self, df_model, feature_cols, scaler_X=None, scaler_y=None):
+    def predict_next(self, df_model, feature_cols=None, scaler_X=None, scaler_y=None):
         try:
-            # get next date = next business day (skip Sundays)
+            # usar SEMPRE o schema salvo no treino
+            feat_cols = list(feature_cols) if feature_cols is not None else self.feature_cols
+            if not feat_cols:
+                raise ValueError("Feature schema (feature_cols) not found. Train the models first.")
+
+            # próxima data (pula domingo)
             last_date = pd.to_datetime(df_model[DATE_COL]).max()
             next_date = last_date + pd.Timedelta(days=1)
-            while next_date.weekday() == 6:  # domingo
+            while next_date.weekday() == 6:
                 next_date += pd.Timedelta(days=1)
 
             last_rows = df_model.tail(self.seq_len)
             if len(last_rows) < self.seq_len:
                 raise ValueError("Insufficient data for seq_len.")
 
-            X_next_seq = last_rows[feature_cols].values
-            X_next_flat = last_rows[feature_cols].iloc[-1].values.reshape(1,-1)
+            # alinhar features exatamente como no treino
+            last_rows_feat = self._align_feature_frame(last_rows, feat_cols)
 
+            X_next_seq = last_rows_feat.values
+            X_next_flat = last_rows_feat.iloc[-1].values.reshape(1, -1)
+
+            # escolher scalers do modelo, se não vierem
             if scaler_X is None and self.scaler_X is not None:
                 scaler_X = self.scaler_X
             if scaler_y is None and self.scaler_y is not None:
@@ -307,18 +348,23 @@ class AutoModels:
                 X_next_seq_scaled = X_next_seq.reshape(1, self.seq_len, X_next_seq.shape[1])
                 X_next_flat_scaled = X_next_flat
 
-            lgb_pred = self.lgb_model.predict(X_next_flat_scaled, num_iteration=self.lgb_model.best_iteration) if self.lgb_model is not None else np.array([0.0])
-            rnn_pred = self.rnn_model.predict(X_next_seq_scaled).flatten() if self.rnn_model is not None else np.array([0.0])
+            # prever
+            lgb_pred = (self.lgb_model.predict(X_next_flat_scaled, num_iteration=self.lgb_model.best_iteration)
+                        if self.lgb_model is not None else np.array([0.0]))
+            rnn_pred = (self.rnn_model.predict(X_next_seq_scaled).flatten()
+                        if self.rnn_model is not None else np.array([0.0]))
 
             w_lgb, w_rnn = self.weights
             pred_scaled = w_lgb * lgb_pred + w_rnn * rnn_pred
+
             if scaler_y is not None:
                 pred_orig = scaler_y.inverse_transform(np.array(pred_scaled).reshape(-1,1)).flatten()[0]
             else:
                 pred_orig = float(pred_scaled[0])
 
             pred_int = int(np.round(pred_orig))
-            score_proxy = float((w_lgb + w_rnn)/2.0)
+            score_proxy = float((w_lgb + w_rnn) / 2.0)
             return pd.Timestamp(next_date), pred_int, score_proxy
         except Exception as e:
             log(f"Fail to predict the next value.{e}", "ERROR")
+            return None, None, None

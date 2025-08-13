@@ -33,7 +33,7 @@ class AutoCalibrator:
             df_prev = df_prev.copy()
             updated_any = False
             for i, row in df_prev.iterrows():
-                if pd.isna(row.get(LASTEST_TARGET_COL_VALUE)) or str(row.get(LASTEST_TARGET_COL_VALUE)).strip() == '':
+                if pd.isna(row.get(LATEST_TARGET_COL_VALUE)) or str(row.get(LATEST_TARGET_COL_VALUE)).strip() == '':
                     try:
                         dt = pd.to_datetime(row[DATE_COL]).normalize()
                     except Exception:
@@ -52,7 +52,7 @@ class AutoCalibrator:
                         else:
                             perc = None
 
-                        df_prev.at[i, LASTEST_TARGET_COL_VALUE] = real_val
+                        df_prev.at[i, LATEST_TARGET_COL_VALUE] = real_val
                         df_prev.at[i, NEXT_TARGET_COL_PERCENTUAL] = perc
                         df_prev.at[i, NEXT_TARGET_COL_RESULT] = resultado
 

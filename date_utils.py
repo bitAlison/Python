@@ -10,6 +10,9 @@ from datetime import timedelta, datetime
 # Check if date is a Brazilian holiday
 # ==============================
 def is_br_holiday(dt: datetime) -> bool:
+    """
+    Check if a date is a Brazilian holiday
+    """
     import holidays
     try:
         br = holidays.Brazil(years=dt.year)
@@ -21,6 +24,9 @@ def is_br_holiday(dt: datetime) -> bool:
 # Check if it is a financial date
 # ==============================
 def get_next_financial_date(last_date: datetime) -> datetime:
+    """
+    Get next Brazilian commercial date
+    """
     nd = last_date
     while True:
         nd += timedelta(days=1)

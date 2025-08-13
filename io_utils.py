@@ -22,7 +22,8 @@ def ensure_dirs():
     """Creates directories needed for the project."""
     try:
         for d in [cfg.PROJECT_DIR, cfg.EXPORT_DIR, cfg.LOG_DIR, cfg.BACKUP_DIR]:
-            Path(d).mkdir(parents=True, exist_ok=True)
+            if not os.path.exists(d):
+                Path(d).mkdir(parents=True, exist_ok=True)
     except Exception as e:
         log(f"An error occurred while trying to create the directories. {e}", "ERROR")
 
@@ -30,7 +31,7 @@ def ensure_dirs():
 # Log Function
 # ==============================
 def log(msg, tipo="INFO"):
-    if cfg.LOG_DEBUG or tipo in ("ERROR", "WARNING"):
+    if tipo in ("ERROR", "WARNING"):
         print(f"[{tipo}] {msg}")
 
 # ==============================
@@ -74,8 +75,8 @@ def load_data_source():
             raise FileNotFoundError(f"Template file not found: {path}")
 
         # Date conversion
-        df = pd.read_csv(path, sep=";", decimal=",", engine="python")
-        df[cfg.DATE_COL] = pd.to_datetime(df[cfg.DATE_COL], errors="coerce", dayfirst=True)
+        df = pd.read_csv(path, parse_dates=[cfg.DATE_COL], encoding=cfg.FILE_ENCODING, sep=cfg.CSV_SEPARATOR, dayfirst=True)
+        #df[cfg.DATE_COL] = pd.to_datetime(df[cfg.DATE_COL], errors="coerce", dayfirst=True)
         df = df.dropna(subset=[cfg.DATE_COL, cfg.TARGET_COL])
 
         return df.sort_values(cfg.DATE_COL).reset_index(drop=True)
@@ -91,13 +92,13 @@ def load_predictions_csv():
     try:
         path = Path(cfg.FORECAST_FILE)
         if not path.exists():
-            cols = [cfg.DATE_COL, cfg.NEXT_TARGET_COL_VALUE, cfg.LASTEST_TARGET_COL_VALUE, cfg.NEXT_TARGET_COL_PERCENTUAL, cfg.NEXT_TARGET_COL_RESULT]
+            cols = [cfg.DATE_COL, cfg.NEXT_TARGET_COL_VALUE, cfg.LATEST_TARGET_COL_VALUE, cfg.NEXT_TARGET_COL_PERCENTUAL, cfg.NEXT_TARGET_COL_RESULT]
             df_empty = pd.DataFrame(columns=cols)
             df_empty.to_csv(path, sep=";", index=False, decimal=",")
             return df_empty
-        df = pd.read_csv(path, sep=";", decimal=",", engine="python")
-        if cfg.DATE_COL in df.columns:
-            df[cfg.DATE_COL] = pd.to_datetime(df[cfg.DATE_COL], errors="coerce", dayfirst=True)
+        df = pd.read_csv(path, parse_dates=[cfg.DATE_COL], encoding=cfg.FILE_ENCODING, sep=cfg.CSV_SEPARATOR, dayfirst=True)
+        # if cfg.DATE_COL in df.columns:
+        #     df[cfg.DATE_COL] = pd.to_datetime(df[cfg.DATE_COL], errors="coerce", dayfirst=True)
         return df
     except Exception as e:
         log(f"An error occurred while trying to read the predicions. {e}", "ERROR")
@@ -115,7 +116,7 @@ def save_predictions(data, predicted_value, real_value=None, percentual_prev=Non
         if not os.path.exists(cfg.FORECAST_FILE):
             df_prev = pd.DataFrame(columns=cfg.TARGET_COL)
         else:
-            df_prev = pd.read_csv(cfg.FORECAST_FILE, sep=";", decimal=".")
+            df_prev = pd.read_csv(cfg.FORECAST_FILE, encoding=cfg.FILE_ENCODING, sep=cfg.CSV_SEPARATOR)
 
         # Rounds expected value to integer
         predicted_value_int = int(round(predicted_value))
@@ -123,7 +124,7 @@ def save_predictions(data, predicted_value, real_value=None, percentual_prev=Non
         new_line = {
             cfg.DATE_COL: data,
             cfg.NEXT_TARGET_COL_VALUE: predicted_value_int,
-            cfg.LASTEST_TARGET_COL_VALUE: real_value if real_value is not None else "",
+            cfg.LATEST_TARGET_COL_VALUE: real_value if real_value is not None else "",
             cfg.NEXT_TARGET_COL_PERCENTUAL: round(percentual_prev, 2) if percentual_prev is not None else "",
             cfg.NEXT_TARGET_COL_RESULT: result if result else ""
         }
@@ -159,7 +160,7 @@ def append_single_prediction(data_prev, predicted_value, real_value=None, perc_p
         new_line = {
             cfg.DATE_COL: pd.to_datetime(data_prev),
             cfg.NEXT_TARGET_COL_VALUE: predicted_value,
-            cfg.LASTEST_TARGET_COL_VALUE: real_value,
+            cfg.LATEST_TARGET_COL_VALUE: real_value,
             cfg.NEXT_TARGET_COL_PERCENTUAL: perc_prev,
             cfg.NEXT_TARGET_COL_RESULT: result
         }
@@ -191,7 +192,7 @@ def update_prediction_result(data_prev, real_value):
 
         # Update prediction value
         idx = df_prev[df_prev[cfg.DATE_COL] == data_prev].index[0]
-        df_prev.at[idx, cfg.LASTEST_TARGET_COL_VALUE] = round(real_value, 2)
+        df_prev.at[idx, cfg.LATEST_TARGET_COL_VALUE] = round(real_value, 2)
 
         # Compare with expected_value (also rounded)
         vp = round(df_prev.at[idx, cfg.NEXT_TARGET_COL_VALUE], 2)
