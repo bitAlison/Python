@@ -87,93 +87,51 @@ def load_data_source():
 # ==============================
 # Load prediction data from csv file
 # ==============================
-def load_predictions_csv():
-    """Reads the forecast file, creates it if it does not exist."""
-    try:
-        path = Path(cfg.FORECAST_FILE)
-        if not path.exists():
-            cols = [cfg.DATE_COL, cfg.NEXT_TARGET_COL_VALUE, cfg.LATEST_TARGET_COL_VALUE, cfg.NEXT_TARGET_COL_PERCENTUAL, cfg.NEXT_TARGET_COL_RESULT]
-            df_empty = pd.DataFrame(columns=cols)
-            df_empty.to_csv(path, sep=";", index=False, decimal=",")
-            return df_empty
-        df = pd.read_csv(path, parse_dates=[cfg.DATE_COL], encoding=cfg.FILE_ENCODING, sep=cfg.CSV_SEPARATOR, dayfirst=True)
-        # if cfg.DATE_COL in df.columns:
-        #     df[cfg.DATE_COL] = pd.to_datetime(df[cfg.DATE_COL], errors="coerce", dayfirst=True)
-        return df
-    except Exception as e:
-        log(f"An error occurred while trying to read the predicions. {e}", "ERROR")
-        return None
+def load_predictions_csv(path: str = None) -> pd.DataFrame:
+    path = path or cfg.FORECAST_FILE
+    if not os.path.exists(path):
+        # retorna DF vazio com colunas no padrão
+        cols = [cfg.DATE_COL, cfg.NEXT_TARGET_COL_VALUE, cfg.LATEST_TARGET_COL_VALUE, cfg.NEXT_TARGET_COL_PERCENTUAL, cfg.NEXT_TARGET_COL_RESULT]
+        return pd.DataFrame(columns=cols)
+    df = pd.read_csv(path, sep=';', encoding=cfg.FILE_ENCODING, dtype=str)
+    # normaliza colunas e tipos
+    for c in [cfg.NEXT_TARGET_COL_VALUE, cfg.LATEST_TARGET_COL_VALUE]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors='coerce')
+    if cfg.NEXT_TARGET_COL_PERCENTUAL in df.columns:
+        df[cfg.NEXT_TARGET_COL_PERCENTUAL] = pd.to_numeric(df[cfg.NEXT_TARGET_COL_PERCENTUAL], errors='coerce')
+    return df
 
 # ==============================
 # Save predictions in the correct format
 # ==============================
-def save_predictions(data, predicted_value, real_value=None, percentual_prev=None, result=None):
-    """
-    Adds a new line to the forecast file.
-    Only one record is added per run.
-    """
-    try:
-        if not os.path.exists(cfg.FORECAST_FILE):
-            df_prev = pd.DataFrame(columns=cfg.TARGET_COL)
-        else:
-            df_prev = pd.read_csv(cfg.FORECAST_FILE, encoding=cfg.FILE_ENCODING, sep=cfg.CSV_SEPARATOR)
-
-        # Rounds expected value to integer
-        predicted_value_int = int(round(predicted_value))
-
-        new_line = {
-            cfg.DATE_COL: data,
-            cfg.NEXT_TARGET_COL_VALUE: predicted_value_int,
-            cfg.LATEST_TARGET_COL_VALUE: real_value if real_value is not None else "",
-            cfg.NEXT_TARGET_COL_PERCENTUAL: round(percentual_prev, 2) if percentual_prev is not None else "",
-            cfg.NEXT_TARGET_COL_RESULT: result if result else ""
-        }
-
-        df_prev = pd.concat([df_prev, pd.DataFrame([new_line])], ignore_index=True)
-        df_prev.to_csv(cfg.FORECAST_FILE, sep=";", decimal=".", index=False)
-
-        log(f"Prediction saved: {new_line}")
-    except Exception as e:
-        log(f"An error occurred while trying to save the predicions. {e}", "ERROR")
+def save_predictions(df: pd.DataFrame, path: str = None):
+    path = path or cfg.FORECAST_FILE
+    # garante ordem e tipos
+    out = pd.DataFrame({
+        cfg.DATE_COL: df.get(cfg.DATE_COL, pd.Series(dtype=str)),
+        cfg.NEXT_TARGET_COL_VALUE: df.get(cfg.NEXT_TARGET_COL_VALUE, pd.Series(dtype=float)).round().astype('Int64'),
+        cfg.LATEST_TARGET_COL_VALUE: df.get(cfg.LATEST_TARGET_COL_VALUE, pd.Series(dtype=float)).round().astype('Int64'),
+        cfg.NEXT_TARGET_COL_PERCENTUAL: df.get(cfg.NEXT_TARGET_COL_PERCENTUAL, pd.Series(dtype=float)).round(2),
+        cfg.NEXT_TARGET_COL_RESULT: df.get(cfg.NEXT_TARGET_COL_RESULT, pd.Series(dtype=str)).fillna('')
+    })
+    out.to_csv(path, sep=';', index=False, encoding=cfg.FILE_ENCODING)
 
 # ==============================
 # Apeend a new prediction record in the csv file
 # ==============================
-def append_single_prediction(data_prev, predicted_value, real_value=None, perc_prev=None, result=None):
-    """
-    Adds a single forecast row to predictions.csv.
-    - Rounds prev_value and actual_value to avoid float vs. int comparison issues.
-    - Ensures there are no multiple records on the same prev_date.
-    """
-    try:
-        # Round values
-        predicted_value = round(predicted_value, 2) if predicted_value is not None else None
-        real_value = round(real_value, 2) if real_value is not None else None
-        perc_prev = round(perc_prev, 2) if perc_prev is not None else None
-
-        df_prev = load_predictions_csv()
-
-        # Remove predictions with the same date
-        df_prev = df_prev[df_prev[cfg.DATE_COL] != pd.to_datetime(data_prev)]
-
-        # New prediction record
-        new_line = {
-            cfg.DATE_COL: pd.to_datetime(data_prev),
-            cfg.NEXT_TARGET_COL_VALUE: predicted_value,
-            cfg.LATEST_TARGET_COL_VALUE: real_value,
-            cfg.NEXT_TARGET_COL_PERCENTUAL: perc_prev,
-            cfg.NEXT_TARGET_COL_RESULT: result
-        }
-
-        df_prev = pd.concat([df_prev, pd.DataFrame([new_line])], ignore_index=True)
-
-        # Sort
-        df_prev = df_prev.sort_values(cfg.DATE_COL).reset_index(drop=True)
-
-        backup_predictions()
-        df_prev.to_csv(cfg.FORECAST_FILE, sep=";", index=False, decimal=".")
-    except Exception as e:
-        log(f"An error occurred while trying to append a new record to the predicions file. {e}", "ERROR")
+def append_prediction_line(date_str: str, pred_int: int, percent: float, path: str = None):
+    """Opcional: helper para acrescentar uma linha de previsão."""
+    df_prev = load_predictions_csv(path)
+    new_line = {
+        cfg.DATE_COL: date_str,
+        cfg.NEXT_TARGET_COL_VALUE: int(pred_int),
+        cfg.LATEST_TARGET_COL_VALUE: '',
+        cfg.NEXT_TARGET_COL_PERCENTUAL: float(round(percent, 2)),
+        cfg.NEXT_TARGET_COL_RESULT: ''
+    }
+    df_prev = pd.concat([df_prev, pd.DataFrame([new_line])], ignore_index=True)
+    save_predictions(df_prev, path)
 
 # ==============================
 # Update prediction result in the csv file
