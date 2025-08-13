@@ -1,1 +1,8 @@
 .venv/
+Forecast.csv
+*.bak.csv
+*.pyc
+*.save
+*.keras
+lgb_model.txt
+model_metadata.json

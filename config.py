@@ -8,7 +8,7 @@ from pathlib import Path
 
 # ----------------- PATHS / DIRECTORIES -----------------
 # Project dirs
-PROJECT_DIR: Path = Path(r"C:\code")                           # Project directory
+PROJECT_DIR: Path = Path(r"D:\Git")                           # Project directory
 DATA_SOURCE: Path  = PROJECT_DIR / "Modelo.csv"                # Data source file (data;valor;suplementar1..14)
 OUTPUT_NAME: str = r"Forecast"                                       #
 OUTPUT_EXTENSION: str = r".csv"                                      #

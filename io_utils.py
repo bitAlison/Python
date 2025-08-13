@@ -59,7 +59,7 @@ def load_data_source() -> pd.DataFrame:
     """Reads the DataSource.csv file and returns a clean DataFrame."""
     try:
         _create_template_if_missing()
-        df = pd.read_csv(DATA_SOURCE, sep=CSV_SEPARATOR, encoding=FILE_ENCODING)
+        df = pd.read_csv(DATA_SOURCE, parse_dates=[DATE_COL], sep=CSV_SEPARATOR, encoding=FILE_ENCODING, dayfirst=True)
         if DATE_COL not in df.columns or TARGET_COL not in df.columns:
             raise ValueError(f"Arquivo {DATA_SOURCE} deve conter as colunas '{DATE_COL}' e '{TARGET_COL}'.")
         return df
@@ -77,7 +77,7 @@ def load_predictions_csv() -> pd.DataFrame:
         df.to_csv(FORECAST_FILE, sep=CSV_SEPARATOR, index=False, encoding=FILE_ENCODING)
         return df
     try:
-        df = pd.read_csv(FORECAST_FILE, sep=CSV_SEPARATOR, encoding=FILE_ENCODING, dtype=str)
+        df = pd.read_csv(FORECAST_FILE, sep=CSV_SEPARATOR, encoding=FILE_ENCODING)
         return df
     except Exception as e:
         log(f"[I/O] Erro ao ler previsões: {e}", "ERROR")
